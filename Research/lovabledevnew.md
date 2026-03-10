@@ -526,6 +526,47 @@ Lovable's Logic Wall is HIGHER than Base44's because:
 
 ---
 
+---
+
+# UPDATE — March 9, 2026: LLM Load Balancer Deep Dive
+
+**Source:** [Routing Billions of Tokens per Minute](https://lovable.dev/blog/routing-billions-of-tokens-per-minute) (Published Mar 4, 2026)
+
+## Key Revelations
+
+### Scale
+- Processing **1B+ tokens/minute** at peak traffic
+- Multi-provider setup: Anthropic (primary), Vertex (Google Cloud), Bedrock (AWS)
+
+### Architecture: Custom LLM Load Balancer
+- **Multiple fallback chains** with probabilistic provider ordering (not a single ranked list)
+- **Project-level affinity** — each project gets a cached fallback chain for several minutes, preserving prompt caching across agent turns
+- **PID controller** per provider recalculates availability every 30 seconds
+- Scoring formula: `score = successes - 200×errors + 1` (0.5% error threshold triggers weight reduction)
+- +1 bias prevents permanently blacklisting providers after transient failures
+- Provider weights calculated greedily: preferred provider gets its full availability, next provider fills remaining capacity, etc.
+
+### Why Prompt Caching Matters
+- Lovable's agent does exploration before code generation, so initial context is reused across subsequent calls
+- Breaking cache (by switching providers mid-project) forces full context reprocessing → higher latency, higher cost
+- Provider rate limits are measured in **non-cached tokens** — poor cache behavior can exhaust all provider capacity simultaneously
+- Sticky routing keeps cache hit rates high → estimated 50-90% token cost reduction vs naive multi-provider
+
+### Competitive Implications
+- **Revised assessment:** Lovable is NOT just "Claude with a UI" — they have genuine infrastructure depth
+- They're building vertically: own LLM routing + Lovable Cloud hosting + reducing Supabase dependency
+- This matches the "own the metal" strategy from our blueprint, executed at billion-token scale
+- Auto-healing without human intervention during provider outages = significant reliability advantage
+- **Threat level: INCREASED** — competing requires solving the same prompt caching + multi-provider problem
+
+### What They Revealed (potentially too much)
+- Exact scoring formula and error threshold
+- Preferred provider ordering strategy
+- Probabilistic sampling approach for fallback chains
+- This is a recruiting play — blog ends with careers link
+
+---
+
 **Sources:**
 - Lovable documentation: https://docs.lovable.dev
 - Lovable docs index (llms.txt): https://docs.lovable.dev/llms.txt
