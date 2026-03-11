@@ -1,0 +1,59 @@
+As a Compiler Engineer, I strongly endorse the transition from regex/string-matching to an Abstract Syntax Tree (AST) driven pipeline. It is the most critical architectural upgrade for an AI coding agent. Treating code as a flat string leads to brittle hallucinations; treating it as a mathematical graph guarantees structural determinism.
+For a Node.js backend managing React 19 (JSX/TSX, Directives) and Fastify (TypeScript, decorators), I highly recommend using Babel paired with Recast rather than Tree-sitter.
+Why not Tree-sitter? Tree-sitter is optimized for fast, error-tolerant IDE parsing (it builds an AST even if the code is broken). Furthermore, mutating a Tree-sitter tree and printing it back while preserving exact user formatting is notoriously difficult.
+Why Babel + Recast? Babel is strict (it rejects invalid syntax) and provides @babel/traverse, a world-class scope/binding analyzer essential for catching orphaned imports. Recast acts as a non-destructive printer—it takes a mutated Babel AST and reprints only the modified nodes, perfectly preserving the developer's original whitespace and comments for the rest of the unmodified file.
+Here is the step-by-step algorithmic workflow and validation pipeline to build your "Surgical AST Diffing" engine.
+Phase 1: Ingestion & Parsing (The "Dangling Bracket" Check)
+To enable surgical diffing, steer the LLM away from Unified Diffs (which rely on highly volatile line numbers) and prompt it to output a Semantic JSON Patch.
+Expected LLM Payload:
+JSON
+
+{
+  "target_file": "src/routes/auth.ts",
+  "ast_locator": { "type": "FunctionDeclaration", "name": "authHandler" },
+  "action": "replace",
+  "snippet": "async function authHandler(req, reply) {\n  const user = await verify(req);\n  // ... new logic \n}"
+}
+Workflow:
+Parse the Target File: Read the local source file into memory and parse it into AST_Original using recast.parse (delegating to Babel's parser with jsx and typescript plugins enabled).
+Parse the LLM Snippet: Parse the snippet string from the JSON payload in isolation into AST_Snippet.
+Validation 1: Syntactic Integrity: Because Babel uses a strict context-free grammar, if the LLM hallucinated a dangling bracket, missed a closing JSX tag, or mangled a parameter list, babel.parse will instantly throw a SyntaxError.
+Error Handling: Catch the error. Extract the line, column, and exact token failure. Abort. Send an automated prompt back to the LLM: "SyntaxError at Line X, Col Y: Unexpected token '}'. Fix your brackets and ensure structurally valid syntax."
+Phase 2: In-Memory Mutation & Speculative Construction
+We do not write to disk. We create a virtual sandbox.
+Clone the AST: Deep clone AST_Original into AST_Speculative.
+Surgical Swap: Traverse AST_Speculative using the LLM's ast_locator to find the target node. Replace the target node with AST_Snippet.
+You now have a syntactically valid, complete AST representing what the file would look like if the LLM's changes were applied.
+Phase 3: Semantic Validation Engine (Static Analysis)
+We now run compiler passes over AST_Speculative using @babel/traverse to catch logical regressions, software rot, and LLM laziness.
+Validation 2: Anti-Elision ("Lazy Coding" Prevention)
+LLMs notoriously hallucinate shorthand comments like // ... existing code ... to save tokens. If blindly merged, this truncates the developer's application.
+AST Node Mass Check: Calculate the "node mass" (total count of descendant AST nodes) of the target block in AST_Original vs. the newly inserted block in AST_Speculative.
+Check: If the mass drops by > 50% without an explicit user prompt requesting a deletion/refactor, flag it.
+Lazy Comment Sniffing: Traverse the newly inserted AST nodes specifically looking for CommentLine and CommentBlock nodes.
+Check: Run regex /(\.\.\.|existing code|rest of|remaining)/i on the comment bodies.
+Error Handling: If both mass drops and a lazy comment is found, Abort. Send the LLM a system error: "Compiler Error: Elision detected. Do not use placeholders. Output the complete, functional block."
+Validation 3: Scope Analysis (Undefined Variables)
+React 19 and Fastify rely heavily on cleanly managed dependencies. We must ensure the LLM didn't introduce a new hook or plugin without importing it.
+Scope Tracking: Babel automatically builds a path.scope graph that tracks all variable bindings and references.
+Undefined Variables: Traverse all Identifier nodes in the modified subtree. If an identifier is read (path.isReferencedIdentifier()), but path.scope.hasBinding(node.name) is false (excluding globals like console, process, or React), the LLM hallucinated a variable.
+Error Handling: Abort. "ReferenceError: 'useActionState' is not defined. Did you forget to import it?"
+Validation 4: Liveness Analysis (Orphaned Imports)
+If the LLM modifies a component and removes the usage of a library, we must ensure it doesn't leave dead code behind.
+Orphaned Imports: Traverse all ImportDeclaration bindings in the global scope. If binding.referenced === false, the import is dead code.
+Error Handling: Auto-Fix. Do not penalize the LLM. Have your Node.js backend safely prune the ImportSpecifier (or the entire ImportDeclaration if empty) from AST_Speculative in memory.
+Validation 5: Framework Contracts (Exports & Directives)
+React 19 Directives: Check AST_Speculative.program.directives. If AST_Original contained a "use client" or "use server" string literal at the top of the file, verify it still exists at index 0. LLMs often overwrite file headers.
+Export Parity: Extract a Set of all exported identifiers (ExportNamedDeclaration, ExportDefaultDeclaration) from AST_Original. Ensure AST_Speculative exports a matching or superset of these identifiers so the module's public API isn't unexpectedly severed.
+Phase 4: Safely Merge and Write to Disk
+If AST_Speculative passes all heuristics, it is structurally sound, semantically valid, and safe to persist.
+Non-Destructive Code Generation:
+JavaScript
+
+const finalCode = recast.print(AST_Speculative).code;
+Crucial Detail: Standard AST generators will reformat your entire file from scratch, resulting in massive, unreadable git diffs. Recast guarantees that only the surgically swapped nodes are reprinted. The remaining 95% of the file is untouched, preserving all original spacing, quirks, and developer formatting.
+Format Alignment: Pass finalCode through Prettier (configured dynamically with the target project's .prettierrc). This ensures the LLM's newly injected snippet matches the repository's style conventions (tabs vs. spaces, quotes).
+Atomic Disk Write:
+Write finalCode to a temporary file (filename.tsx.tmp).
+Perform an atomic rename (fs.renameSync) to overwrite the actual file (filename.tsx). This prevents development servers (Vite, Next.js, Fastify watch mode) from reading partially written files and crashing the user's local environment.
+By adopting this Compiler paradigm, your AI Agent transforms from a "blind text editor" into a strict Language Server Protocol (LSP). It physically cannot break syntax, it mathematically refuses lazy coding, and it resolves dependencies cleanly before ever touching the user's hard drive.

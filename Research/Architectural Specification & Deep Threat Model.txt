@@ -1,0 +1,188 @@
+Document: Architectural Specification & Deep Threat Model
+To: Platform Engineering & Security Teams
+From: Principal Systems Architect
+Subject: Secure Iframe Communication Protocol (SICP) & Failure-Mode Analysis
+Context: React 19 Site Engine embedding Fastify/React 19 Custom Apps via Same-Origin Iframes
+Executive Architectural Warning: The Same-Origin Paradox
+Before detailing the protocol, we must establish the baseline risk of our topology. Hosting the parent (/sites/) and the embedded custom applications (/apps/custom/) on the same domain collapses standard browser security boundaries. Because they share an origin, they share localStorage, sessionStorage, and—critically—have synchronous access to window.parent.document.
+An XSS vulnerability in any custom embedded application is effectively a direct exploit against the parent Site Engine. While the protocol below secures our explicit communication paths, the engineering team must treat these custom apps as Zero-Trust execution contexts.
+Below is the Failure-Mode Analysis (FMA) for our specific edge cases, followed by the formal specification for the Secure Iframe Communication Protocol (SICP).
+Part 1: Deep Threat Model & Failure-Mode Analysis (FMA)
+1. JWT Refresh Race Conditions (The "Thundering Herd")
+Context: Both the React 19 parent and the React 19 iframe rely on the shared localStorage JWT. Both applications utilize Axios/Fetch interceptors to catch 401 Unauthorized responses.
+Failure Mode: A short-lived access token expires. The user interacts with the iframe, triggering a 401 from the Fastify backend. Simultaneously, a background polling request in the parent triggers a 401. Both applications read the exact same Refresh Token from localStorage and fire concurrent /refresh POST requests.
+Threat Vector (Token Family Revocation): Our centralized Identity Service enforces Refresh Token Rotation (RTR). The first request succeeds, rotating the token family. The second request arrives milliseconds later, attempting to use the already-consumed refresh token. The Identity Service flags this as a token replay attack (theft), instantly revokes the entire token family, and forcefully logs the user out. This results in unpredictable, system-wide session drops (Denial of Service).
+2. Visual Theme Synchronization (CSS Injection & XSS)
+Context: The parent broadcasts visual theme parameters (dark mode, primary hex colors) to ensure B2B2C white-labeling consistency down to the embedded app.
+Failure Mode: The embedded app listens via a global window.addEventListener('message') and dynamically injects the received theme (e.g., rendering an inline <style> block or passing the payload into a dangerously evaluated CSS-in-JS block).
+Threat Vector (DOM XSS & Lateral Movement): Because global postMessage can be spoofed by any script or browser extension executing on the same origin, an attacker can broadcast a payload like {"primaryColor": "red';}</style><script>window.parent.document.cookie='...'</script>"}. If the custom app evaluates this string, it triggers DOM-based XSS. Given the Same-Origin environment, the payload can immediately traverse up the DOM and hijack the parent Site Engine.
+3. Dynamic Resizing Infinite Loops & UI Redressing
+Context: To prevent ugly nested scrollbars, the iframe must dynamically resize its height as the user navigates longer views within the Fastify-backed app.
+Failure Mode (Layout Thrashing): The child measures its height and messages the parent. The parent updates <iframe height="...">. This DOM update causes a layout recalculation: a vertical scrollbar disappears, slightly widening the child's viewport. Text wraps differently, subtly altering the child's height. The child's ResizeObserver fires again, creating an infinite loop.
+Threat Vector (Availability & Integrity): This layout thrashing pegs the browser's Main Thread to 100% CPU, crashing the tab. Alternatively, a malicious or buggy custom app could intentionally request a height of 999999px, pushing the parent's native UI (navigation, security controls) permanently off-screen (UI Redressing / Layout Hijacking).
+Part 2: Secure Iframe Communication Protocol (SICP) Specification
+To systematically resolve these failure modes, the engineering team will implement SICP. This protocol standardizes transport isolation, concurrency control, and zero-trust data parsing.
+Architecture Module 1: The Isolated Transport Layer
+Global window.postMessage broadcasts are strictly prohibited to prevent interception and spoofing. We will establish a secure, point-to-point tunnel using the MessageChannel API.
+Site Engine (Parent) Implementation:
+TypeScript
+
+import { useEffect, useRef } from 'react';
+export function EmbeddedApp({ customAppUrl }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const portRef = useRef<MessagePort | null>(null);
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const establishHandshake = () => {
+      // 1. Create a dedicated 2-way communication tunnel
+      const channel = new MessageChannel();
+      portRef.current = channel.port1;
+      
+      // 2. Attach SICP handler to our end of the pipe
+      channel.port1.onmessage = handleSICPMessage;
+      // 3. Transfer port2 to the child. Restrict target origin to our domain.
+      iframe.contentWindow?.postMessage(
+        { type: 'SICP_HANDSHAKE' }, 
+        window.location.origin, 
+        [channel.port2]
+      );
+    };
+    iframe.addEventListener('load', establishHandshake);
+    return () => iframe.removeEventListener('load', establishHandshake);
+  }, [customAppUrl]);
+  return <iframe ref={iframeRef} src={customAppUrl} style={{ width: '100%', border: 'none' }} />;
+}
+Custom App (Child) Implementation:
+TypeScript
+
+import { useEffect } from 'react';
+export function useSICPHandshake() {
+  useEffect(() => {
+    const handleHandshake = (event: MessageEvent) => {
+      // 1. Strict Origin Validation
+      if (event.origin !== window.location.origin) return;
+      
+      // 2. Capture the unforgeable port
+      if (event.data?.type === 'SICP_HANDSHAKE' && event.ports[0]) {
+        const securePort = event.ports[0];
+        securePort.onmessage = handleSecureMessage;
+        
+        // 3. Detach global listener to shrink the attack surface
+        window.removeEventListener('message', handleHandshake);
+      }
+    };
+    window.addEventListener('message', handleHandshake);
+  }, []);
+}
+Architecture Module 2: Concurrency Control via Web Locks (Auth Race Resolution)
+Because the parent and child share localStorage, passing JWTs over SICP is redundant and adds synchronization latency. Instead, we solve the "Refresh Storm" using the browser's native Web Locks API (navigator.locks).
+Both the Parent and Child Axios/Fetch interceptors must wrap their 401 Unauthorized refresh logic in this mutually exclusive lock:
+TypeScript
+
+// Shared Auth Utility (Used in both Parent and Child API interceptors)
+async function executeSecureTokenRefresh(failedRequestConfig) {
+  // Request an exclusive, cross-context lock named 'jwt_refresh_lock'
+  return await navigator.locks.request('jwt_refresh_lock', async () => {
+    
+    // 1. DOUBLE-CHECK PATTERN: Did another frame refresh the token while we waited for the lock?
+    const currentToken = localStorage.getItem('access_token');
+    if (!isTokenExpired(currentToken)) {
+      failedRequestConfig.headers.Authorization = `Bearer ${currentToken}`;
+      return apiClient.request(failedRequestConfig); // Resume without network call
+    }
+    // 2. We hold the lock, and the token is expired. Hit the Identity Service.
+    const response = await fetch('/api/identity/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refresh: localStorage.getItem('refresh_token') })
+    });
+    
+    if (!response.ok) throw new Error('Session Expired');
+    const { accessToken, refreshToken } = await response.json();
+    
+    // 3. Update shared state
+    localStorage.setItem('access_token', accessToken);
+    localStorage.setItem('refresh_token', refreshToken);
+    
+    // 4. Replay the original failed Fastify/API request
+    failedRequestConfig.headers.Authorization = `Bearer ${accessToken}`;
+    return apiClient.request(failedRequestConfig);
+  });
+}
+Architectural Guarantee: This mathematically eliminates the RTR race condition. Even if 5 iframes 401 simultaneously, the OS grants the lock to only one context. The leader refreshes the token; the followers wake up, see the new token, and bypass the network entirely.
+Architecture Module 3: Zero-Trust CSSOM Injection (Theme XSS Resolution)
+All incoming theme data must be strictly validated at runtime and mapped directly into the CSS Object Model (CSSOM). We strictly prohibit string-based CSS generation.
+Child Implementation:
+TypeScript
+
+import { z } from 'zod';
+// 1. Strict RegEx enforcement. No arbitrary strings allowed.
+const ThemeSchema = z.object({
+  mode: z.enum(['light', 'dark', 'system']),
+  primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Must be strict 6-char hex")
+});
+function handleSecureMessage(event: MessageEvent) {
+  if (event.data.type === 'SYNC_THEME') {
+    const parsed = ThemeSchema.safeParse(event.data.payload);
+    
+    if (!parsed.success) {
+      return console.error("SICP Security: Malformed theme payload rejected.");
+    }
+    // 2. Safe Injection via CSSOM
+    // The browser treats this purely as a value, bypassing the HTML parser and neutralizing XSS.
+    const root = document.documentElement;
+    root.style.setProperty('--theme-primary', parsed.data.primaryColor);
+    root.setAttribute('data-theme', parsed.data.mode);
+  }
+}
+Architecture Module 4: Monotonic Bounded Resizing (Layout Thrashing Resolution)
+To handle dynamic resizing safely without React 19 concurrent rendering issues, the child must throttle its measurements via thresholds, and the parent must enforce hard bounding limits.
+1. The Child Observer (Debounce + Delta Threshold):
+TypeScript
+
+import { useEffect } from 'react';
+export function useSICPResizePublisher(securePort: MessagePort) {
+  useEffect(() => {
+    // Observe a specific inner wrapper, NEVER document.body (prevents margin collapse bugs)
+    const rootElement = document.getElementById('app-internal-root');
+    if (!rootElement || !securePort) return;
+    let lastHeight = 0;
+    const observer = new ResizeObserver((entries) => {
+      // requestAnimationFrame debounces the read to align with the browser's paint cycle
+      window.requestAnimationFrame(() => {
+        const newHeight = Math.ceil(entries[0].contentRect.height);
+        
+        // ARCHITECTURAL REQUIREMENT: Minimum delta of 5px to break sub-pixel infinite loops
+        if (Math.abs(newHeight - lastHeight) > 5) {
+          lastHeight = newHeight;
+          securePort.postMessage({ type: 'RESIZE_REQ', height: newHeight });
+        }
+      });
+    });
+    observer.observe(rootElement);
+    return () => observer.disconnect();
+  }, [securePort]);
+}
+2. The Parent Gatekeeper (Clamping):
+TypeScript
+
+// Inside Parent's handleSICPMessage:
+if (message.type === 'RESIZE_REQ') {
+  const requestedHeight = message.height;
+  
+  if (typeof requestedHeight === 'number') {
+    // Hard Constraints prevent DoS and UI Redressing
+    const MIN_HEIGHT = 400;
+    const MAX_HEIGHT = 5000; // Force child to use internal scrolling if content exceeds this
+    
+    const safeHeight = Math.min(Math.max(requestedHeight, MIN_HEIGHT), MAX_HEIGHT);
+    
+    // Apply CSS transition to smooth out dynamic shifts and decouple reflows
+    if (iframeRef.current) {
+      iframeRef.current.style.height = `${safeHeight}px`;
+      iframeRef.current.style.transition = 'height 0.2s ease-out';
+    }
+  }
+}
+Final Directives
+By routing execution through MessageChannel, leveraging native navigator.locks for multi-context synchronization, mathematically bounding DOM measurements, and strictly parsing data into the CSSOM, the engineering team will safely embed these Fastify/React 19 applications while neutralizing the severe, inherent risks of a Same-Origin deployment.

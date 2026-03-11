@@ -1,0 +1,72 @@
+As a Cloud Economics and AI Infrastructure Architect, my mandate is to decouple your platform’s value delivery from linear API cost growth. In an autonomous IDE like the Anything Builder, "Token Bloat"—where an agent reads a 100k+ token codebase on every single $O(N)$ read-eval-print loop (REPL)—is an existential threat to your Gross Margins.
+To protect unit economics while preserving the "magic" of an autonomous developer, the @ab/connectors/ai service must evolve from a naive API wrapper into a Stateful, Context-Aware AI Gateway.
+Here is the architectural blueprint for your Semantic Caching, Intelligent Routing, and Circuit-Breaker systems.
+1. Intelligent Routing: The "Intent & Escalation" Matrix
+Sending every autonomous micro-task to an expensive reasoning model is a massive misallocation of capital. The router must act as a deterministic economic gatekeeper, dynamically dispatching requests based on an Intent Complexity Heuristic and a Promote-on-Fail Escalation Protocol.
+A. Pre-Flight Triage (Static Routing)
+Before dispatching a payload, the router evaluates the task based on "Blast Radius" (files touched) and Intent:
+Tier 1: claude-3-5-haiku (The Workhorse): Triggers if the blast radius is $\le 2$ files, and the intent is routine (e.g., resolving syntax/linting errors, writing unit tests for pure functions, CSS styling, localized regex). Haiku is exceptionally fast and ~80% cheaper. It should handle 70% of iterative test-fixing loops.
+Tier 2: claude-3-5-sonnet (The Reasoner): Triggers if the blast radius is $> 2$ files, or the prompt contains structural keywords ("refactor", "architect", "database migration", "race condition").
+Tier 3: claude-3-opus (The Planner): Reserved strictly for zero-to-one greenfield project scaffolding or explicit user-toggled "Deep Reasoning" mode. Never used in high-frequency validation loops.
+B. The "Promote-on-Fail" Escalation Loop (Dynamic Routing)
+All autonomous validation loops (Agent generates code $\rightarrow$ Linter fails $\rightarrow$ Agent fixes) default to Haiku.
+If Haiku generates code that fails the validation step twice consecutively, the router flags the task. It strips out redundant conversational bloat, appends Haiku's failed diffs as a "Negative Constraint" (what not to do), and dynamically escalates the 3rd attempt to Sonnet. This treats Sonnet as a Tier-2 escalation engineer rather than a frontline worker.
+2. Payload Structure: Prefix-Optimized Caching (90% Hit Rate)
+Anthropic’s Prompt Caching reduces input costs by up to 90%, but it relies on strict, contiguous prefix matching. If a single character shifts early in the payload, the entire downstream cache is invalidated.
+A standard conversational "sliding window" (dropping the oldest message on every turn) is margin-suicide. It alters the prefix on every request, resulting in a 0% cache hit rate for your massive codebase context. To achieve a 90%+ hit rate, we must order the payload from Absolute Static to Highly Volatile, decoupling the codebase from the conversation history.
+The Optimal Payload Architecture:
+JSON
+
+{
+  "model": "claude-3-5-sonnet-latest",
+  "max_tokens": 8192,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are the Anything Builder Autonomous Agent. [RULES & TOOL SCHEMAS]"
+    },
+    {
+      "type": "text",
+      "text": "<stable_project_state>\n[ENTIRE READ-ONLY CODEBASE GOES HERE]\n</stable_project_state>",
+      "cache_control": { "type": "ephemeral" } 
+      // 🔼 BREAKPOINT 1: Secures the 100k+ token codebase cache. 
+      // Do NOT update this on every keystroke. Freeze it at "Epoch 1".
+    }
+  ],
+  "messages": [
+    // --- STEPPED CONVERSATION HISTORY ---
+    { "role": "user", "content": "Add user authentication." },
+    { "role": "assistant", "content": "I will update auth.ts." },
+    { 
+      "role": "user", 
+      "content": [
+        { "type": "text", "text": "Make the login button blue." },
+        { "type": "text", "text": " ", "cache_control": { "type": "ephemeral" } }
+        // 🔼 BREAKPOINT 2: Caches the historical conversation up to this exact point.
+      ]
+    },
+    // --- ACTIVE WORKING SET (HIGHLY DYNAMIC / UNCACHED) ---
+    {
+      "role": "user",
+      "content": "<uncommitted_diffs>\n[ONLY FILES EDITED SINCE STABLE SNAPSHOT]\n</uncommitted_diffs>\n<stderr>\n[LATEST LINTER ERRORS]\n</stderr>\n[CURRENT TASK] Fix the validation errors."
+    }
+  ]
+}
+The "Stepped Epoch" Memory Strategy:
+To handle the sliding window without breaking Breakpoint 2, we implement Epochs. Instead of dropping messages one-by-one, we let the history append linearly for 10 turns. On the 11th turn, a background Haiku task summarizes the oldest 8 turns, we drop the raw messages, generate a new <stable_project_state>, and take a planned cache-miss to restart the Epoch. This guarantees your prefix remains perfectly static for 10 sequential loop iterations.
+3. Circuit-Breaker Logic: Halting Autonomous Thrashing
+Autonomous loops often enter a "Thrashing State"—where an LLM hallucinates a non-existent API or gets stuck on a syntax error, burning compute budgets endlessly. The @ab/connectors/ai router must implement a Token-Aware Tri-State Circuit Breaker.
+Layer 1: Hard Volumetric Ceilings (The Financial Kill-Switch)
+Max Retries: Absolute limit of 4 consecutive validation failures per autonomous task.
+Token Budget: Tie every task_id to an ephemeral $USD budget (e.g., $0.50 per task). If cumulative_cost > budget, trip the breaker.
+Layer 2: State Oscillation Detection (The "Ping-Pong" Breaker)
+LLMs frequently oscillate between two broken states (e.g., fixing Bug A causes Bug B $\rightarrow$ fixing Bug B brings back Bug A).
+Logic: Before executing a retry, the router hashes the Abstract Syntax Tree (AST) or normalizes and hashes the model's proposed code diff.
+Trigger: If Hash(Attempt N) == Hash(Attempt N-2), the agent is trapped in a deterministic A-B-A loop. Trip the breaker immediately, bypassing the remaining max retries to save tokens.
+Layer 3: Semantic Stagnation (The "Despair" Detector)
+Sometimes the model changes the code slightly (e.g., tweaking variable names or whitespace), but the underlying architectural error remains untouched.
+Logic: Calculate the Levenshtein distance of the stderr string returned by the compiler/linter across attempts.
+Trigger: If Similarity(Error_N, Error_N-1) > 95% across two Sonnet escalations, the model lacks the semantic context to solve the root cause. Trip the breaker.
+Graceful Degradation (Human-In-The-Loop):
+When the circuit breaks, the gateway must intercept the retry, halt the autonomous worker, and push a Human-in-the-Loop (HITL) interrupt to the Anything Builder UI:
+⚠️ "Anything Builder paused autonomous execution to protect your token budget. I am deadlocked attempting to resolve a TypeError in Header.tsx after 4 approaches. Here is the compiler error and my recent diff history. How would you like me to proceed?"
