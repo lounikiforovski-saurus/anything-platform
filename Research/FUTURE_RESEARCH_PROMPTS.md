@@ -41,3 +41,28 @@ Based on an impartial review of the current intelligence gathered, there are sev
 
 **Gemini Deep Research Prompt:**
 > "Reverse-engineer the prompt engineering techniques and system instructions used by generative AI platforms like Lovable.dev and Vercel v0 to automatically generate secure authentication wrappers, protected routes, and Role-Based Access Control (RBAC) logic. Search through leaked system prompts, open-source prompt libraries, and developer guides for these platforms. How exactly do these platforms force the LLM to output client-side code that correctly interfaces with an external Backend-as-a-Service (like Supabase Auth or a custom Identity service) without hallucinating insecure fallback logic? Provide examples of the specific prompt constraints and architectural patterns they use to guarantee that the generated React/Next.js code respects the centralized platform's identity provider and correctly maps tenant/org permissions."
+
+
+---
+
+### 6. WCAG 2.2 AA Automation Gap (Compliance Liability)
+**The Gap:** Telcos have zero tolerance for ADA/EAA compliance risk. LLMs statistically fail at generating accurate ARIA states and semantic HTML. The Deep Think Blueprint suggests a "Headless Axe-core Linter" running synchronously during the AST validation phase, but we need concrete prototypes.
+
+**Gemini Deep Research Prompt:**
+> "Investigate the implementation of automated, headless WCAG 2.2 AA compliance linting within AI code generation pipelines. Specifically, analyze how tools like Axe-core can be integrated into a Node.js AST validation step before compiling React components. Design a prototype workflow where a failed accessibility check automatically triggers a specific 'Reverse Meta-Prompt' instructing the LLM to fix contrast ratios, ARIA labels, or DOM ordering without manual user intervention. How can we ensure 'Compliance-as-a-Service' with minimal latency overhead?"
+
+---
+
+### 7. MCP "Confused Deputy" Vulnerabilities
+**The Gap:** We are utilizing MCP to allow the AI to touch Telco infrastructure. However, if an attacker uses indirect prompt injection (e.g., hiding a prompt in an uploaded PDF) to tell the agent to execute unauthorized MCP commands, the system is at risk of "Confused Deputy" exploits.
+
+**Gemini Deep Research Prompt:**
+> "Conduct a deep threat model analysis of the Model Context Protocol (MCP) concerning 'Confused Deputy' and indirect prompt injection attacks. If an AI agent has access to highly privileged enterprise MCP servers, how can we deterministically separate the agent's hallucinated or injected intent from the human operator's actual permissions? Detail specific OAuth/OIDC downscoping mechanics, 'human-in-the-loop' authorization steps for sensitive MCP execution, and cryptographic validation methods to secure the MCP Gateway layer against compromised LLM contexts."
+
+---
+
+### 8. The Ejection Paradox vs. Telco Stickiness
+**The Gap:** Absolute lock-in (like Hostinger's monolithic PocketBase approach) causes enterprise clients to churn, but allowing a simple "eject" function means losing the billing relationship. The proposed "Bring Your Own Infra" (BYOI) pipeline requires abstracting platform services so apps can run on a Telco VPS.
+
+**Gemini Deep Research Prompt:**
+> "Analyze the technical requirements and architectural design for a 'Bring Your Own Infra' (BYOI) code ejection pipeline. How can an AI app builder platform package a dynamically generated React/Node.js application—which heavily relies on internal platform routing and auth services—into a standalone Docker container that can be deployed onto a managed Virtual Private Server (VPS)? Research how platforms like Vercel v0 or Lovable handle code exports that detach from their proprietary cloud. Provide a strategy for maintaining the Telco's recurring billing relationship when the SMB assumes full ownership of the exported codebase and infrastructure."
